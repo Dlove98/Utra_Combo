@@ -140,20 +140,66 @@ export default function UltraCombo() {
     await safeSetStorage(STORAGE_KEY, next);
   }, []);
 
+  // Chargement hybride : Tente de charger data.json, sinon utilise LocalStorage / Fallback
   useEffect(() => {
     (async () => {
-      let loaded = await safeGetStorage(STORAGE_KEY);
       const now = new Date();
-      const upcoming = [dateStr(now), dateStr(addDays(now, 1)), dateStr(addDays(now, 2))];
+      const todayISO = dateStr(now);
+      const upcoming = [todayISO, dateStr(addDays(now, 1)), dateStr(addDays(now, 2))];
+
+      let jsonMatches = null;
+      try {
+        const res = await fetch("/data.json");
+        if (res.ok) {
+          const fetched = await res.json();
+          if (fetched && fetched.matches && fetched.matches.length > 0) {
+            jsonMatches = fetched.matches.map((m, idx) => ({
+              id: m.id || `m-json-${idx}`,
+              time: m.time || "15:00",
+              league: m.league || "Football",
+              home: m.homeTeam || m.home || "Équipe 1",
+              away: m.awayTeam || m.away || "Équipe 2",
+              prediction: m.prediction || "GG (BTTS)",
+              estScore: m.expectedScore || m.estScore || "2-1",
+              confidence: typeof m.confidence === "string" ? parseInt(m.confidence, 10) : (m.confidence || 75),
+              selected: m.selected !== undefined ? m.selected : true,
+              result: m.result || "Pending"
+            }));
+          }
+        }
+      } catch (e) {
+        console.log("data.json non trouvé, passage au mode dynamique standard.");
+      }
+
+      let loaded = await safeGetStorage(STORAGE_KEY);
 
       if (!loaded) {
-        loaded = { coupons: [...upcoming.map((d) => makeCoupon(d, false)), ...seedHistory()] };
+        const todayCoupon = jsonMatches 
+          ? { date: todayISO, matches: jsonMatches } 
+          : makeCoupon(todayISO, false);
+
+        loaded = { 
+          coupons: [
+            todayCoupon, 
+            makeCoupon(dateStr(addDays(now, 1)), false), 
+            makeCoupon(dateStr(addDays(now, 2)), false), 
+            ...seedHistory()
+          ] 
+        };
       } else {
+        // Injection des matchs réels dans le coupon du jour s'ils ont été récupérés par le script
+        if (jsonMatches) {
+          loaded.coupons = loaded.coupons.map((c) => 
+            c.date === todayISO ? { ...c, matches: jsonMatches } : c
+          );
+        }
+
         const missing = upcoming.filter((d) => !loaded.coupons.some((c) => c.date === d));
         if (missing.length) {
           loaded = { coupons: [...missing.map((d) => makeCoupon(d, false)), ...loaded.coupons] };
         }
       }
+
       setData(loaded);
       setLoading(false);
       await safeSetStorage(STORAGE_KEY, loaded);
